@@ -1,0 +1,207 @@
+\documentclass[conference]{IEEEtran}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx,amsmath,booktabs,url}
+\graphicspath{{../figures/}}
+\makeatletter
+\newcommand{\paperfig}[2]{\par\medskip\noindent\begin{minipage}{\columnwidth}
+\def\@captype{figure}\centering\includegraphics[width=\columnwidth]{#1}\caption{#2}
+\end{minipage}\smallskip\par}
+\newcommand{\papertable}[2]{\par\medskip\noindent\begin{minipage}{\columnwidth}
+\def\@captype{table}\centering\caption{#1}{\footnotesize #2}
+\end{minipage}\smallskip\par}
+\makeatother
+\begin{document}
+\title{Privacy-Preserving AI in Forensics\\Evidence-Linked Investigation and Privacy Evaluation}
+\author{\IEEEauthorblockN{Student 1, Student 2,\\
+Student 3, and Student 4}
+\IEEEauthorblockA{Department of Computer Science and Engineering\\{}
+[Institution and affiliations to be completed by the project team]}}
+\maketitle
+
+\begin{abstract}
+An account identifier helps an investigator follow a logon to a process start. In an export, that identifier also links the account's other activity. PrivForensics keeps source-line references in the local case and lets the investigator choose how account and host identifiers appear in derived data. On 10,000 generated authentication records, a random forest averaged 0.700 held-out F1 with the original features, 0.667 after masking and 0.708 after case-scoped HMAC. Masking also reduced the measured membership-inference advantage from 0.106 to 0.049. Across three seeds, the standard neural model averaged 0.699 F1 and the DP-SGD runs averaged between 0.617 and 0.626. Their mean training epsilon ranged from 0.849 to 4.997 at delta $10^{-5}$. The results describe the generated workload and the access granted to each privacy test.
+\end{abstract}
+\begin{IEEEkeywords}
+Digital forensics, event correlation, pseudonymization, differential privacy, authentication logs
+\end{IEEEkeywords}
+
+\section{Introduction}
+Suppose an investigator has a logon on one computer and a process start on another. Time alone may put several records within the same window. The account and the computer's role in the logon help narrow that set. What should a copy of the findings carry if a second analyst needs to verify the association? A stable identifier makes the check easier, but it can also let the recipient piece together more of the account's activity than the case requires.
+
+PrivForensics keeps this distinction visible. Inside the case, a finding points to the physical rows that support it and records the rule that joined them. The investigator can inspect a limited sample for identifying fields, then decide which values to retain, mask, replace with scoped tokens or omit in an export. These controls give a concrete way to investigate exposure before releasing derived data.
+
+The experiment asks what changes once those controls reach the model inputs. It compares detection on the same holdout, measures membership inference and record linkage under specified observations, and records the time and memory needed to fit the models. A separate neural comparison examines clipping and noise during training. Together, the case walk-through and model runs show where evidence can stay checkable and where the observed costs of limiting access begin to appear.
+
+\newpage
+\section{Data and threat model}
+\subsection{Source schemas}
+The three parsers follow LANL Cyber1's documented authentication, process and red-team formats~\cite{kent}. The stream uses seconds elapsed from the start of collection. Authentication rows distinguish source and destination accounts and computers, which matters when a process on the destination host is a candidate match. A process row records the account and computer for a start or end event. A red-team reference provides a time, source account and ordered host pair. Ordinary rows without a matching reference remain unlabelled.
+
+Generated gzip fixtures exercise the three parsers, including an exact reference match and a malformed authentication row. A separate seeded generator creates the labelled dataset for training and evaluation. Its 10,000 authentication records have 6,220 normal and 3,780 suspicious labels, with overlap in the features used for detection. The generator also supplies fictional contact and device fields to exercise the privacy controls. The reported binary metrics come from these generated labels. Real LANL captures were unavailable for the study.
+
+\subsection{Local trust and observation}
+The workstation runs under one OS account. It accepts requests through loopback, checks browser origins, and resolves paths against permitted directories before registering local files. Analysts see redacted samples by default. When an analyst confirms a field reveal, the value is displayed for ten seconds and the audit records the field and its physical line. Control of the disk, the OS account and the original evidence remains with the installation.
+
+Each privacy test specifies what its observer can see. The membership test uses the model's confidence in a supplied label. The linkage test gives the observer an auxiliary directory of generated accounts and selected attributes. That directory contains neither the HMAC secret nor a token map. These access assumptions determine what the measurements can support.
+
+\clearpage
+\section{Evidence-linked design}
+\subsection{Evidence registration and ingest}
+Registration and verification start by reading the file in blocks and computing SHA-256~\cite{fips}. Registration saves the checksum, byte count, source type and case. Verification computes a new digest against that saved value. The reader also checks file identity and modification metadata so it can catch a source that changes during a read. When evidence has changed, the analyst can restore and verify the original or register the new file under its own record.
+
+The ingestion worker reads gzip and plain files incrementally. An invalid line still advances the physical line number, so a parser error cannot shift the references for subsequent events. The worker checks field counts, encoding, numeric bounds and supported values, then writes accepted rows to Parquet in batches. It stores a bounded sample of error reasons and line positions. A case can start with a small range and ingest later ranges as needed. Seeking farther into a gzip file may require replaying the earlier compressed bytes.
+
+The browser asks DuckDB for a filtered portion of the Parquet store~\cite{duckdb}. Time, memory and result limits keep an interactive request bounded. Each source reference carries the version derived from the source digest, physical range and schema revision. Thus a saved finding continues to name its original range even if another job indexes later lines of the same file.
+
+\paperfig{architecture.pdf}{Workflow from original evidence through validated events, protection, evaluation and reporting.}
+
+\subsection{Application history}
+SQLite keeps the case record, including the queue, evidence, findings, privacy policies, runs and export history. The audit digest of each entry covers its own fields and the preceding digest. Verification can detect a broken link or a changed entry in the retained chain. If someone can rewrite the whole database and recalculate its hashes, an independent record is needed to verify custody.
+
+Exports have a separate checksum. It covers the generated report bytes, so a reader can compare a downloaded report with the version recorded in the case. Fig.~1 follows the evidence from registration through these derived artifacts.
+
+\newpage
+\subsection{Event association}
+The first red-team reference in the generated fixture illustrates the distinction between a reference match and a nearby lead. At elapsed second 465 it lists \mbox{U4@DOM1}, from \mbox{C11} to \mbox{C31}. Authentication line 29 has the same time, source account and ordered hosts, so Rule~R1 matches it exactly. Process line 29 records \mbox{P14} starting four seconds later under the same account on \mbox{C31}. The shared account and destination host satisfy Rule~R2 inside the selected window. That second association records proximity and a shared identity pair. Its rule and four-second offset remain visible in the finding.
+
+R2 keeps source and destination roles paired when it checks an authentication event. A separate rule, R3, is used for repeated accounts in the synthetic authentication table. Each saved attachment includes the dataset version and physical line, so a reviewer can check the evidence behind either kind of association.
+
+\subsection{Field-level control}
+Before applying a policy, the analyst can inspect a limited sample for emails, IP addresses, phone numbers, accounts and devices. Seven rules flag direct identifiers, repeated links, rare combinations, inferred attributes, unnecessary retained fields, membership risks and model-output leakage. The score is simply the number of triggered rules in the sample. Opening a rule shows the condition that raised it.
+
+A field can be kept, masked, pseudonymized or dropped. For pseudonyms, the workstation computes HMAC-SHA-256~\cite{hmac} over the mechanism version, identifier domain, scope and original value, then uses the first 128 bits. The account and computer domains are separate. A dataset scope limits matching to one dataset, while case scope permits links across datasets in the same investigation. A workspace scope extends that boundary. Restricted files hold the random keys, and saved operations carry key version identifiers.
+
+In the example above, case-scoped tokens could preserve the association between authentication and process records without sharing the account's original name. Any recipient who sees those tokens can still group records carrying the same value. Masking contact fields or dropping location limits other paths to linkage. The browser shows a partial mask for inspection. The masking experiment uses a shared input value to remove the selected feature distinctions.
+
+\clearpage
+\section{Experiment design}
+\subsection{Split and feature contract}
+The same last 2,000 events form the detection holdout in every reported run. Of the earlier 8,000 rows, a seeded hash of the source line assigns each row to training or to the reserve for the membership test. The three seeds gave training sizes of 6,235, 6,220 and 6,291. An account-group split is also available for a different question, where the accounts in the evaluation set must be unseen in training.
+
+The features encode login hour cyclically, clip failed-attempt counts and represent categories in fixed buckets. The supervised random forest uses class-balanced weighting within bootstraps and a depth limit~\cite{breiman}. Isolation Forest can score unlabelled activity and may add account and host frequencies fitted on the training subset~\cite{liu}. Both neural variants have a 24-unit ReLU layer and a scalar output. Their common feature map operates row by row, so the private variant needs no statistic estimated from the full training set.
+
+\papertable{Configurations evaluated on synthetic labels.}{
+\begin{tabular}{lp{.79\columnwidth}}
+\toprule
+ID & Configuration\\ \midrule
+E0 & Standard Random Forest and standard neural model\\
+E1 & Suppression of selected forest inputs\\
+E2 & Case-scoped HMAC on forest inputs\\
+E3 & Scoped HMAC combined with suppression\\
+E4 & DP-SGD on the matched neural architecture\\
+\bottomrule
+\end{tabular}}
+Each seed covers four forest configurations, one standard neural fit and three DP-SGD fits. Within a seed, the forest comparisons reuse the row assignments and differ in the identifier treatment. The neural comparison holds architecture and input mapping fixed. It also records the sampling regime, which is part of the DP-SGD intervention.
+
+A run manifest ties the result to source and dataset digests, a seed, feature and model versions, parameters and dependency versions. HMAC runs also name their key version. Rerunning DP-SGD repeats the settings with fresh noise. Different seeds can give slightly different accounted budgets at the same nominal settings because the training size and resulting step count can change.
+
+\newpage
+\subsection{DP-SGD and accounting}
+DP-SGD limits each row's gradient contribution before aggregation.
+\begin{equation}
+\bar g_i=g_i\min(1,C/\|g_i\|_2).
+\end{equation}
+Opacus supplies Poisson batches and adds Gaussian noise with scale $\sigma C$ to the clipped gradients~\cite{abadi,opacus}. These runs use $C=1$, 12 epochs, nominal batches of 128, and $\delta=10^{-5}$. The comparison varies the noise multiplier $\sigma$ across 0.85, 1.20 and 2.50. For example, at $\sigma=1.20$, seeds 419 and 420 ran 588 optimizer steps and returned $\epsilon=2.410$. Seed 421 ran 600 steps at a slightly lower sample rate and returned $\epsilon=2.381$. The R\'enyi differential privacy (RDP) accountant uses the realized settings~\cite{mironov}.
+
+The accounting applies to a training row conditional on the partition and feature map. An account can contribute many rows to the log. Accounting for a whole account, or composing the budgets of several releases, requires a separate analysis. These runs used the Opacus research configuration without a cryptographically secure random generator.
+
+\subsection{Evaluation outcomes}
+F1 at a score threshold of 0.5 summarizes how the classifier balances precision and recall on the synthetic holdout. ROC-AUC and average precision describe ranking across thresholds. The run stores the confusion matrix, error rates and a sample of flags tied to their source rows, which lets an investigator follow up on high scores.
+
+The membership procedure starts with the confidence assigned to a known class~\cite{shokri}. It samples class-matched training members and reserve nonmembers, chooses a threshold on calibration records, and evaluates it on a disjoint set. It reports accuracy, ROC-AUC and the difference between true- and false-positive rates at the selected threshold. For linkage, the first 1,500 generated records supply the auxiliary view and the next 1,500 supply the release. The two reported quantities are unique correct matches and the fraction of released rows that share an observable key.
+
+Separate timers record fit and inference time. CPU use is expressed relative to one logical core, and peak resident set size (RSS) comes from samples of the whole process. A separate ingestion run records validated rows and source bytes read per second. Keeping those measurements separate matters because a process can spend substantial time loading libraries before any model trains.
+
+\clearpage
+\section{Detection and privacy results}
+\papertable{Detection and membership means across three seeds. The detection holdout contains 2,000 rows.}{
+\begin{tabular}{lrrrr}
+\toprule
+Config. & F1 & ROC-AUC & MIA AUC & Adv.\\ \midrule
+E0 RF & .700 & .826 & .572 & .106\\
+E1 RF & .667 & .787 & .537 & .049\\
+E2 RF & .708 & .828 & .567 & .103\\
+E3 RF & .662 & .785 & .571 & .100\\
+E0 NN & .699 & .842 & .507 & .017\\
+E4 .85 & .617 & .816 & .511 & .032\\
+E4 1.20 & .626 & .814 & .512 & .020\\
+E4 2.50 & .626 & .812 & .511 & .021\\
+\bottomrule
+\end{tabular}}
+
+\subsection{What masking and HMAC changed}
+The largest changes in forest F1 came from suppressing features. Relative to 0.700 at baseline, it fell to 0.667 with masking and 0.662 with the combined policy. HMAC alone gave 0.708. It retained equality between repeated identifiers while changing the values sent through the categorical buckets. The small increase could depend on which identifiers collided under this key and feature map. The experiment gives a useful comparison for this fixture, and further keys would test how stable that difference is.
+
+The masking run also made membership harder to infer from confidence. Its advantage fell from 0.106 to 0.049, while HMAC alone stayed close to baseline at 0.103. For an investigator, the choice depends on whether records must remain linkable after export. A token can support that work even when the original identifier is withheld. A recipient who needs only a short summary may have little reason to receive a stable token.
+
+\paperfig{detection-membership-paper.pdf}{Held-out F1 and membership ROC-AUC across three seeds. Bars show sample standard deviation. The dashed line marks chance ranking for membership.}
+
+\newpage
+\subsection{The effect of private training}
+\paperfig{f1-epsilon.pdf}{Mean held-out F1 versus accounted training $\epsilon$. Bars show sample standard deviations across the three seeds. The standard neural mean is shown as a dashed line.}
+
+\papertable{Recorded budgets from Opacus RDP with $\delta=10^{-5}$.}{
+\begin{tabular}{rrrr}
+\toprule
+Noise $\sigma$ & Mean $\epsilon$ & Mean F1 & F1 SD\\ \midrule
+0.85 & 4.997 & .617 & .003\\
+1.20 & 2.401 & .626 & .016\\
+2.50 & .849 & .626 & .011\\
+\bottomrule
+\end{tabular}}
+
+The ordinary neural model averaged 0.699 F1 at the common threshold. The three DP-SGD settings gave means from 0.617 to 0.626. Raising the multiplier from 0.85 to 2.50 reduced the mean accounted $\epsilon$ from 4.997 to 0.849. The two higher multipliers produced almost the same mean F1 in these runs, and their seed-to-seed variation overlapped. This sample is too small to trace a reliable change in F1 within that part of the budget range.
+
+The confidence test was already close to chance for the ordinary neural model, with a mean membership AUC of 0.507. Mean AUC for the private versions stayed between 0.510 and 0.512. At these values the test has little basis for ranking the neural settings by leakage. The accountant still gives a quantitative training bound under the stated assumptions. The forest baseline's AUC of 0.572 shows that this confidence test had more separation on the forest, whose training and scores differ from the neural model's.
+
+\clearpage
+\section{Linkage and overhead}
+\subsection{Generated directory evaluation}
+\paperfig{linkage.pdf}{Linkage in the 1,500-row release. The observer's auxiliary directory contains only the original generated account identifiers.}
+With the raw account identifier, the auxiliary directory gave a unique correct match for all 1,500 rows. In the masked copy, shared masks made the matches ambiguous. The tokenized copy used a different representation from the public directory and yielded zero correct matches under this rule. Inside that same copy, 1,498 of the 1,500 rows still shared a token with at least one other row. The first count measures identification against a directory. The second measures linkage inside the release.
+
+When the rule also required location and device type, 53.1\% of the pseudonymized rows still shared an observed key, and the original view matched 50.7\% of the release. Requiring more fields narrows each group, but some attribute combinations appear in only one of the slices. The change in exact-match coverage therefore also reflects what the directory happened to contain.
+
+\subsection{Medium ingestion}
+The medium input was a 27.3 MB generated CSV containing 250,000 events. Validation and ingestion took 2.79 seconds, with zero rejected rows. That gives about 89,625 validated rows/s and 9.80 source MB/s for this run. The small gzip fixtures separately test decompression and stable source positions after malformed rows. A full LANL throughput measurement would include the archives' compression and the host's I/O limits.
+
+\newpage
+\subsection{Resource measurements}
+\paperfig{model-overhead-paper.pdf}{Training wall time and peak process RSS. Each point is one run. The horizontal marks indicate the means.}
+The study ran on an arm64 Mac with eight logical cores and 8 GiB of RAM. The forest configurations averaged 0.174 to 0.203 seconds of training. DP-SGD configurations averaged 0.473 to 0.543 seconds. One timing is particularly important in Fig.~5. The first ordinary neural fit took 1.943 seconds, while the following two took 0.261 and 0.243 seconds after the libraries had initialized. Its mean mixes startup and fitting costs. A controlled comparison of private training overhead would randomize the run order and measure cold and warm fits separately. The observed peak RSS includes memory used by the interpreter and libraries.
+
+\subsection{Functional validation}
+The evidence tests changed a registered file and checked that a second verification caught the digest mismatch. Ingestion tests exercised gzip ranges, oversized lines and a legacy CSV schema. The correlation tests matched the generated red-team record and saved its related process with the rule and source line. Policy tests checked that keys rotate, that HMAC domains stay separate and that presentation mode blocks a field reveal.
+
+Browser coverage follows an investigation from registration to report export, including a baseline and a private fit. The report tests calculate SHA-256 over downloaded PDF, CSV, HTML and Markdown bytes and compare each digest with the saved export entry. These checks establish that the workflow and its evidence pointers operate on the tested cases.
+
+\clearpage
+\section{Validity and conclusion}
+The training data were generated, so their label and feature relationships were known in advance. That makes it possible to compare several protections on the same holdout. It also limits what the study can say about operational detection. The LANL-shaped fixtures verify how the three parsers and correlation rules behave. A study of analyst outcomes would need representative authorized captures and a defensible way to label activity beyond a selected set of reference events.
+
+The privacy measurements also inherit the choices made in their tests. Class matching helps the membership test keep label imbalance from driving the comparison, yet recurring accounts and time-dependent activity can still affect confidence. In the linkage test, an observer equipped with a comparable token directory would face a different problem. The zero auxiliary matches under HMAC apply to the directory used here.
+
+The practical outcome is a way to inspect those trade-offs alongside the evidence. In this fixture, masking reduced forest F1 and reduced the measured membership advantage. Scoped HMAC kept detection near baseline and preserved within-release linkage. DP-SGD gave a recorded row-level budget at a cost in F1 relative to the ordinary neural model. An investigator can examine the source, policy and model configuration behind each of those comparisons.
+
+\subsection{Operational interpretation}
+The source digest, exact rule and physical line let a reviewer retrace a finding. The local audit chain is one part of that review. An independent acquisition or custody record would cover the history outside the workstation. Repeated releases and multiple rows per account also need explicit treatment if an organization intends to rely on the training budget for a wider disclosure decision.
+
+\newpage
+\section{Reproduction}
+The evaluation runner in \textit{scripts/evaluate.py} uses the same handlers as the user-facing Lab. The workspace preserves the generated source, the measured run manifests and the JSON used to produce the charts. The reported forest and neural configurations can be checked against the three recorded seeds. Replaying HMAC features requires the same case and key version. The private training runs use fresh noise each time.
+
+For a short verification of the workflow, open the generated example case and verify the authentication file. Locate the first red-team reference and its adjacent process event, then check the rule and the physical lines in the saved finding. In the Lab, run E0 and E4 on the same generated source. The manifests record the holdout, the model configuration, and the accountant settings needed to explain differences between the two runs.
+
+\begin{thebibliography}{00}
+\bibitem{kent} A. D. Kent, \emph{Comprehensive, Multi-Source Cyber-Security Events}, Los Alamos National Laboratory, 2015, doi: 10.17021/1179829.
+\bibitem{fips} NIST, \emph{Secure Hash Standard (SHS)}, FIPS PUB 180-4, 2015, doi: 10.6028/NIST.FIPS.180-4.
+\bibitem{duckdb} M. Raasveldt and H. M\"uhleisen, \emph{DuckDB: An Embeddable Analytical Database}, ACM SIGMOD, 2019, pp. 1981--1984, doi: 10.1145/3299869.3320212.
+\bibitem{hmac} H. Krawczyk, M. Bellare, and R. Canetti, \emph{HMAC: Keyed-Hashing for Message Authentication}, RFC 2104, 1997, doi: 10.17487/RFC2104.
+\bibitem{breiman} L. Breiman, \emph{Random Forests}, Machine Learning, vol. 45, pp. 5--32, 2001, doi: 10.1023/A:1010933404324.
+\bibitem{liu} F. T. Liu, K. M. Ting, and Z.-H. Zhou, \emph{Isolation Forest}, IEEE ICDM, 2008, pp. 413--422, doi: 10.1109/ICDM.2008.17.
+\bibitem{abadi} M. Abadi et al., \emph{Deep Learning with Differential Privacy}, ACM CCS, 2016, pp. 308--318, doi: 10.1145/2976749.2978318.
+\bibitem{opacus} A. Yousefpour et al., \emph{Opacus: User-Friendly Differential Privacy Library in PyTorch}, arXiv:2109.12298, 2021.
+\bibitem{mironov} I. Mironov, \emph{R\'enyi Differential Privacy}, IEEE CSF, 2017, pp. 263--275, doi: 10.1109/CSF.2017.11.
+\bibitem{shokri} R. Shokri, M. Stronati, C. Song, and V. Shmatikov, \emph{Membership Inference Attacks Against Machine Learning Models}, IEEE S\&P, 2017, pp. 3--18, doi: 10.1109/SP.2017.41.
+\end{thebibliography}
+\end{document}
